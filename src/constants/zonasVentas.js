@@ -1,0 +1,3 @@
+const zonaVentas = []
+
+export { zonaVentas };
