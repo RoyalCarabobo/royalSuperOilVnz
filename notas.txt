@@ -1,0 +1,329 @@
+-- Aseguramos que la política use 'id'
+DROP POLICY IF EXISTS "Permitir inserción inicial" ON clientes;
+CREATE POLICY "Permitir inserción inicial" 
+ON clientes FOR INSERT 
+WITH CHECK (auth.uid() = id);
+
+-- 1. Habilitar seguridad en la tabla
+ALTER TABLE clientes ENABLE ROW LEVEL SECURITY;
+
+-- 2. Crear política: Solo el dueño puede ver su propia información
+CREATE POLICY "Los clientes solo ven su propio perfil" 
+ON clientes
+FOR SELECT
+USING (auth.uid() = user_id);
+
+-- 3. Crear política: Solo el dueño puede insertar su perfil (al registrarse)
+CREATE POLICY "Permitir inserción inicial" 
+ON clientes
+FOR INSERT
+WITH CHECK (auth.uid() = user_id);
+
+distruibir los registros de uusuarios :
+
+CREATE OR REPLACE FUNCTION public.distribuir_nuevo_usuario()
+RETURNS TRIGGER AS $$
+BEGIN
+    -- 1. Si el metadato indica que es un 'cliente'
+    IF (new.raw_user_meta_data->>'rol') = 'cliente' THEN
+        INSERT INTO public.clientes (user_id, email, nombre_encargado, status, vendedor_id)
+        VALUES (
+            new.id, 
+            new.email, 
+            new.raw_user_meta_data->>'nombre_completo', 
+            'pendiente',
+            (new.raw_user_meta_data->>'vendedor_id')::uuid
+        );
+    
+    -- 2. Si es personal de la empresa (vendedor, admin, etc.)
+    ELSE
+        INSERT INTO public.usuarios (id, nombre_completo, rol, status)
+        VALUES (
+            new.id, 
+            new.raw_user_meta_data->>'nombre_completo', 
+            COALESCE(new.raw_user_meta_data->>'rol', 'vendedor'), 
+            'activo'
+        );
+    END IF;
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+TRIGGER
+CREATE TRIGGER on_auth_user_created
+  AFTER INSERT ON auth.users
+  FOR EACH ROW EXECUTE PROCEDURE public.distribuir_nuevo_usuario();
+
+datos para el TRIGGER
+const { data, error } = await supabase.auth.signUp({
+  email: cleanEmail,
+  password: password,
+  options: {
+    data: {
+      nombre_completo: form.encargado,
+      rol: 'cliente',
+      // otros datos que el trigger necesite...
+    }
+  }
+});
+
+otro trigger
+CREATE OR REPLACE FUNCTION public.handle_new_user_distribution()
+RETURNS TRIGGER AS $$
+DECLARE
+  v_vendedor_id UUID;
+BEGIN
+  -- 1. CASO: CLIENTE
+  IF (NEW.raw_user_meta_data->>'rol') = 'cliente' THEN
+    
+    -- Intentamos buscar el vendedor de la zona
+    SELECT vendedor_id INTO v_vendedor_id 
+    FROM public.zonas_ventas 
+    WHERE UPPER(nombre) = UPPER(NEW.raw_user_meta_data->>'zona')
+    LIMIT 1;
+
+    -- RESPALDO: Si no hay vendedor en esa zona, asignamos el primero que encontremos
+    -- Esto evita que el registro falle por un valor nulo si la columna es obligatoria
+    IF v_vendedor_id IS NULL THEN
+      SELECT id INTO v_vendedor_id FROM public.usuarios WHERE rol = 'vendedor' LIMIT 1;
+    END IF;
+
+    -- INSERCIÓN EN TABLA CLIENTES
+    INSERT INTO public.clientes (
+      id,
+      razon_social,
+      rif,
+      encargado,
+      vendedor_id,
+      direccion,
+      telefono,
+      email,
+      zona,
+      status,
+      fecha_registro
+    )
+    VALUES (
+      NEW.id,
+      COALESCE(NEW.raw_user_meta_data->>'razon_social', 'POR DEFINIR'),
+      COALESCE(NEW.raw_user_meta_data->>'rif', 'SIN RIF'),
+      COALESCE(NEW.raw_user_meta_data->>'nombre_completo', 'SIN NOMBRE'),
+      v_vendedor_id, 
+      COALESCE(NEW.raw_user_meta_data->>'direccion', 'DIRECCIÓN PENDIENTE'),
+      COALESCE(NEW.raw_user_meta_data->>'telefono', 'SIN TELÉFONO'),
+      NEW.email,
+      COALESCE(NEW.raw_user_meta_data->>'zona', 'GENERAL'),
+      'pendiente',
+      NOW()
+    );
+
+  -- 2. CASO: PERSONAL INTERNO (ADMIN/VENDEDOR)
+  ELSE
+    INSERT INTO public.usuarios (id, nombre_completo, correo, rol, status)
+    VALUES (
+      NEW.id,
+      COALESCE(NEW.raw_user_meta_data->>'nombre_completo', 'Nuevo Usuario'),
+      NEW.email,
+      COALESCE(NEW.raw_user_meta_data->>'rol', 'vendedor'),
+      'activo'
+    );
+  END IF;
+
+  RETURN NEW;
+EXCEPTION WHEN OTHERS THEN
+  -- Este bloque es vital: si algo falla, registra el error en los logs pero no bloquea el registro de Auth
+  -- Aunque lo ideal es que el insert funcione, esto te permite ver qué falló sin romper el app
+  RAISE LOG 'Error en handle_new_user_distribution: %', SQLERRM;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+
+
+
+-- Tabla para Métodos de Pago
+CREATE TABLE configuracion_pagos (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  banco TEXT,
+  tipo TEXT,
+  moneda TEXT,
+  detalles JSONB,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT now()
+);
+
+-- Tabla para Tasa del Día (guardamos historial)
+CREATE TABLE configuracion_tasa (
+  id SERIAL PRIMARY KEY,
+  valor DECIMAL NOT NULL,
+  fecha TIMESTAMP WITH TIME ZONE DEFAULT now()
+);
+
+-- Borra la anterior e instala esta versión vinculada por ID
+DROP TABLE IF EXISTS zonas_ventas;
+
+CREATE TABLE zonas_ventas (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  nombre TEXT NOT NULL UNIQUE, -- Ejemplo: "CENTRO", "OCCIDENTE"
+  sector TEXT,                 -- Ejemplo: "Valencia, Maracay"
+  vendedor_id UUID REFERENCES auth.users(id), -- Vinculación real
+  vendedor_nombre TEXT,        -- Opcional, para lectura rápida
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT now()
+);
+
+-- 1. Función para vincular fotos (Salta RLS)
+CREATE OR REPLACE FUNCTION public.vincular_fotos_cliente(
+  p_user_id UUID,
+  p_rif_url TEXT,
+  p_fachada_url TEXT
+)
+RETURNS VOID AS $$
+BEGIN
+  UPDATE public.clientes
+  SET 
+    foto_rif_url = p_rif_url,
+    foto_fachada_url = p_fachada_url,
+    status = 'pendiente'
+  WHERE id = p_user_id;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- 2. Asegurar que el ID en clientes sea UUID
+-- Si tu columna ID es texto, el RPC fallará. Verifica esto en tu tabla.
+
+
+{
+  "id": "2ce6bc15-2f70-49c6-8f9c-59da4daf74e6",
+  "email": "vtr.27import@gmail.com",
+  "banned_until": null,
+  "created_at": "2026-04-01 22:29:37.064561+00",
+  "confirmed_at": "2026-04-01 22:30:10.367387+00",
+  "confirmation_sent_at": "2026-04-01 22:29:37.121028+00",
+  "is_anonymous": false,
+  "is_sso_user": false,
+  "invited_at": null,
+  "last_sign_in_at": "2026-04-01 23:06:13.617631+00",
+  "phone": null,
+  "raw_app_meta_data": {
+    "provider": "email",
+    "providers": [
+      "email"
+    ]
+  },
+  "raw_user_meta_data": {
+    "rol": "admin",
+    "sub": "2ce6bc15-2f70-49c6-8f9c-59da4daf74e6",
+    "role": "admin",
+    "email": "vtr.27import@gmail.com",
+    "correo": "vtr.27import@gmail.com",
+    "telefono": "04145174722",
+    "full_name": "William Talavera",
+    "email_verified": true,
+    "phone_verified": false,
+    "nombre_completo": "William Talavera"
+  },
+  "updated_at": "2026-04-13 18:16:41.549172+00",
+  "providers": [
+    "email"
+  ]
+}
+
+{
+  "id": "7ce173a8-70a9-4c24-ba2a-091aa55751c6",
+  "email": "lalejandrojteran5@gmail.com",
+  "banned_until": null,
+  "created_at": "2026-04-01 21:37:43.142476+00",
+  "confirmed_at": "2026-04-01 21:37:43.199834+00",
+  "confirmation_sent_at": null,
+  "is_anonymous": false,
+  "is_sso_user": false,
+  "invited_at": null,
+  "last_sign_in_at": "2026-04-01 21:39:45.188153+00",
+  "phone": null,
+  "raw_app_meta_data": {
+    "provider": "email",
+    "providers": [
+      "email"
+    ]
+  },
+  "raw_user_meta_data": {
+    "rol": "vendedor",
+    "sub": "7ce173a8-70a9-4c24-ba2a-091aa55751c6",
+    "role": "vendedor",
+    "email": "lalejandrojteran5@gmail.com",
+    "correo": "lalejandrojteran5@gmail.com",
+    "telefono": "04125360615",
+    "full_name": "Alejandro teran ",
+    "email_verified": true,
+    "phone_verified": false,
+    "nombre_completo": "Alejandro teran "
+  },
+  "updated_at": "2026-04-06 14:42:18.405725+00",
+  "providers": [
+    "email"
+  ]
+}
+
+{
+  "id": "00a99f25-121a-4247-af87-79f11a3279a9",
+  "email": "adonis@gmail.com",
+  "banned_until": null,
+  "created_at": "2026-04-26 18:18:40.329681+00",
+  "confirmed_at": "2026-04-26 18:18:40.379726+00",
+  "confirmation_sent_at": null,
+  "is_anonymous": false,
+  "is_sso_user": false,
+  "invited_at": null,
+  "last_sign_in_at": "2026-04-26 18:19:15.659751+00",
+  "phone": null,
+  "raw_app_meta_data": {
+    "provider": "email",
+    "providers": [
+      "email"
+    ]
+  },
+  "raw_user_meta_data": {
+    "rif": "J-1234567-8",
+    "rol": "cliente",
+    "sub": "00a99f25-121a-4247-af87-79f11a3279a9",
+    "zona": "VALENCIA",
+    "email": "adonis@gmail.com",
+    "telefono": "04124252256",
+    "direccion": "valencia",
+    "razon_social": "Adonis DAller ca",
+    "email_verified": true,
+    "phone_verified": false,
+    "nombre_completo": "adonis daller"
+  },
+  "updated_at": "2026-04-26 18:19:15.670921+00",
+  "providers": [
+    "email"
+  ]
+}
+
+{
+  "id": "593f9a2c-1fe9-461e-af65-3a107a001679",
+  "email": "distribuidorasupercarabobo@gmail.com",
+  "banned_until": null,
+  "created_at": "2026-03-31 20:45:20.85466+00",
+  "confirmed_at": "2026-03-31 20:45:20.886568+00",
+  "confirmation_sent_at": null,
+  "is_anonymous": false,
+  "is_sso_user": false,
+  "invited_at": null,
+  "last_sign_in_at": "2026-04-26 15:39:51.972514+00",
+  "phone": null,
+  "raw_app_meta_data": {
+    "provider": "email",
+    "providers": [
+      "email"
+    ]
+  },
+  "raw_user_meta_data": {
+    "rol": "admin",
+    "email_verified": true
+  },
+  "updated_at": "2026-04-26 15:39:51.996942+00",
+  "providers": [
+    "email"
+  ]
+}

@@ -1,8 +1,8 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import Link from 'next/link';
-import EditProductModal from '@/components/EditProductModal';
+import EditProductModal from '@/components/modal/EditProductModal';
 
 export default function InventarioPage() {
     const [productos, setProducts] = useState([]);
@@ -11,18 +11,7 @@ export default function InventarioPage() {
     const [isModalOpen, setIsModalOpen] = useState(false);
 
 
-    const refreshData = async () => {
-        // Re-ejecuta la lógica de fetchProducts que ya tienes en tu useEffect
-        const { data } = await supabase
-            .from('productos')
-            .select('*')
-            .order('created_at', { ascending: true });
-
-        if (data) setProducts([...data]);
-    };
-
-
-    const fetchProducts = async () => {
+    const fetchProducts = useCallback(async () => {
         const { data, error } = await supabase
             .from('productos')
             .select('*')
@@ -31,12 +20,29 @@ export default function InventarioPage() {
         if (error) console.error("Error cargando productos:", error);
         else setProducts(data || []);
         setLoading(false);
-    };
+    }, []);
 
     useEffect(() => {
 
         fetchProducts();
-    }, []);
+
+        // realtime
+        const channel = supabase
+        .channel('real-time-inventory') // nombre del canal
+        .on(
+            'postgres_changes',
+            { event: '*', schema: 'public', table: 'productos' },
+            (payload) => {
+                console.log('Cambio detectado en productos:', payload);
+                fetchProducts(); // refresca la lista de productos al detectar cambios
+            }
+        )
+        .subscribe();
+        // Limpieza al desmontar el componente
+        return () => {
+            supabase.removeChannel(channel);
+        };
+    }, [fetchProducts   ]);
 
     const handleEdit = (product) => {
         setEditingProduct(product);
@@ -127,7 +133,7 @@ export default function InventarioPage() {
                 product={editingProduct}
                 isOpen={isModalOpen}
                 onClose={() => setIsModalOpen(false)}
-                onUpdate={refreshData}
+                onUpdate={fetchProducts} // Pasamos la función de carga para asegurar sincronía manual también
             />
         </main>
     );

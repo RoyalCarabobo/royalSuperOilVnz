@@ -2,16 +2,20 @@ import { createServerClient } from '@supabase/ssr'
 import { NextResponse } from 'next/server'
 
 export async function middleware(request) {
+  // 1. Crear una respuesta inicial
   let response = NextResponse.next({
     request: { headers: request.headers },
   })
 
+  // 2. Inicializar el cliente de Supabase (Correcto dentro de la función)
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL,
     process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY,
     {
       cookies: {
-        getAll() { return request.cookies.getAll() },
+        getAll() {
+          return request.cookies.getAll()
+        },
         setAll(cookiesToSet) {
           cookiesToSet.forEach(({ name, value }) => request.cookies.set(name, value))
           response = NextResponse.next({ request })
@@ -23,50 +27,59 @@ export async function middleware(request) {
     }
   )
 
-  // auth.getUser() es más lento pero más seguro que getSession()
-  // Lo llamamos solo una vez.
+  // 3. Obtener el usuario y la ruta actual
   const { data: { user } } = await supabase.auth.getUser()
   const { pathname } = request.nextUrl
+  const rol = user?.user_metadata?.rol
 
-  // --- OPTIMIZACIÓN DE RUTAS PÚBLICAS ---
-  // Si no hay usuario y no está intentando entrar al dashboard, dejar pasar de inmediato
-  if (!user && !pathname.startsWith('/dashboard')) {
-    return response
-  }
+  // DEBUG: Esto aparecerá en tu terminal de VS Code
+  console.log(`🛡️ Middleware: [${pathname}] | Usuario: ${user?.email || 'No logueado'} | Rol: ${rol || 'Sin rol'}`);
 
-  // 1. PROTECCIÓN DE DASHBOARD
+  // --- LÓGICA DE REDIRECCIONES ---
+
+  // A. Si no hay usuario y trata de entrar al dashboard
   if (!user && pathname.startsWith('/dashboard')) {
     return NextResponse.redirect(new URL('/login', request.url))
   }
 
-  // 2. LÓGICA DE LOGIN (Aquí es donde evitamos consultas infinitas)
+  // B. Si hay usuario y está en el login, mandarlo a su dashboard según rol
   if (user && pathname === '/login') {
-    // En lugar de consultar la DB cada vez, miramos los metadatos que guardamos al registrar
-    const role = user.user_metadata?.rol
-    const target = role === 'admin' ? '/dashboard/admin' : '/dashboard/vendedor'
+    let target = '/dashboard/vendedor' // Por defecto
+    if (rol === 'admin') target = '/dashboard/admin'
+    else if (rol === 'cliente') target = '/dashboard/cliente'
+    
     return NextResponse.redirect(new URL(target, request.url))
   }
 
-  // 3. SEGURIDAD CRUZADA (Evitar que un vendedor entre a rutas de admin)
-  if (user && pathname.startsWith('/dashboard/admin')) {
-    const role = user.user_metadata?.rol
-    if (role !== 'admin') {
-      return NextResponse.redirect(new URL('/dashboard/vendedor', request.url))
+  // C. PROTECCIÓN DE RUTAS POR ROL (Solo si está en /dashboard)
+  if (user && pathname.startsWith('/dashboard')) {
+    
+    // Protección para ADMIN
+    if (pathname.startsWith('/dashboard/admin') && rol !== 'admin') {
+      const target = rol === 'cliente' ? '/dashboard/cliente' : '/dashboard/vendedor'
+      return NextResponse.redirect(new URL(target, request.url))
+    }
+
+    // Protección para VENDEDOR
+    if (pathname.startsWith('/dashboard/vendedor') && rol !== 'vendedor') {
+      const target = rol === 'admin' ? '/dashboard/admin' : '/dashboard/cliente'
+      return NextResponse.redirect(new URL(target, request.url))
+    }
+
+    // Protección para CLIENTE
+    if (pathname.startsWith('/dashboard/cliente') && rol !== 'cliente') {
+      const target = rol === 'admin' ? '/dashboard/admin' : '/dashboard/vendedor'
+      return NextResponse.redirect(new URL(target, request.url))
     }
   }
 
   return response
 }
 
-
 export const config = {
   matcher: [
     /*
-     * Coincide con todas las rutas de solicitud excepto las que comienzan con:
-     * - api (rutas de API)
-     * - _next/static (archivos estáticos)
-     * - _next/image (optimización de imágenes)
-     * - favicon.ico (archivo de favicon)
+     * Coincide con todas las rutas excepto archivos estáticos y API
      */
     '/((?!api|_next/static|_next/image|favicon.ico).*)',
   ],

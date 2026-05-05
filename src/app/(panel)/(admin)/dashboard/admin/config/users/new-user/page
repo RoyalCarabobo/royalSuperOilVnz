@@ -1,0 +1,122 @@
+'use client'
+import { useState } from 'react'
+import { createClient } from '@/utils/supabase/client'
+import { useRouter } from 'next/navigation'
+
+export default function RegisterPage() {
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [fullName, setFullName] = useState('') // Nuevo: Nombre
+  const [phone, setPhone] = useState('')       // Nuevo: Teléfono
+  const [role, setRole] = useState('vendedor')
+  const [loading, setLoading] = useState(false)
+  const router = useRouter()
+
+  const handleRegister = async (e) => {
+    e.preventDefault()
+    setLoading(true)
+    const supabase = createClient()
+
+    // Enviamos TODO en user_metadata para que el Trigger lo reciba
+    const { error } = await supabase.auth.signUp({ 
+      email, 
+      password, 
+      options: { 
+         data: { 
+          role: role,
+          full_name: fullName,
+          nombre_completo: fullName, 
+          telefono: phone,
+          correo: email,
+          rol:role
+        } 
+      } 
+    })
+
+    if (error) {
+      alert("Error: " + error.message)
+      setLoading(false)
+    } else {
+      alert("Usuario registrado exitosamente en el sistema.")
+      router.push('/dashboard/admin/config/users')
+      router.refresh()
+    }
+  }
+
+  return (
+    <div className="min-h-screen bg-[#0a0a0a] flex items-center justify-center p-6">
+      <div className="w-full max-w-md bg-[#111111] border border-gray-800 p-8 rounded-3xl shadow-2xl">
+        <h2 className="text-3xl font-black italic uppercase text-white mb-6 text-center">
+          Nuevo <span className="text-red-600">Staff</span>
+        </h2>
+        
+        <form onSubmit={handleRegister} className="space-y-4">
+          {/* Nombre*/}
+          <div className="group">
+            <input 
+              required
+              type="text" 
+              placeholder="Nombre y Apellido" 
+              className="w-full bg-black border border-gray-800 p-4 rounded-xl text-white focus:border-blue-600 outline-none transition-all"
+              onChange={(e) => setFullName(e.target.value)}
+            />
+          </div>
+
+          {/* Email */}
+          <input 
+            required
+            type="email" 
+            placeholder="Correo" 
+            className="w-full bg-black border border-gray-800 p-4 rounded-xl text-white focus:border-blue-600 outline-none transition-all"
+            onChange={(e) => setEmail(e.target.value)}
+          />
+
+          {/* Teléfono */}
+          <input 
+            required
+            type="tel" 
+            placeholder="0424123456" 
+            className="w-full bg-black border border-gray-800 p-4 rounded-xl text-white focus:border-blue-600 outline-none transition-all"
+            onChange={(e) => setPhone(e.target.value)}
+          />
+
+          {/* Password */}
+          <input 
+            required
+            type="password" 
+            placeholder="Contraseña" 
+            className="w-full bg-black border border-gray-800 p-4 rounded-xl text-white focus:border-blue-600 outline-none transition-all"
+            onChange={(e) => setPassword(e.target.value)}
+          />
+
+          {/* Cargo */}
+          <div className="space-y-2">
+            <label className="text-[10px] font-black uppercase text-gray-500 ml-2 tracking-widest">Cargo Asignado</label>
+            <select 
+              className="w-full bg-black border border-gray-800 p-4 rounded-xl text-white focus:border-blue-600 outline-none uppercase font-bold text-sm cursor-pointer"
+              onChange={(e) => setRole(e.target.value)}
+              value={role}
+            >
+              <option value="vendedor">Vendedor de Zona</option>
+              <option value="admin">Administrador General</option>
+            </select>
+          </div>
+          
+          <button 
+            disabled={loading}
+            className={`w-full ${loading ? 'bg-gray-700' : 'bg-blue-600 hover:bg-blue-700'} text-white font-black py-4 rounded-xl transition-all uppercase italic flex items-center justify-center gap-2 mt-4 shadow-lg shadow-blue-900/20`}
+          >
+            {loading ? (
+              <span className="animate-pulse">Sincronizando...</span>
+            ) : (
+              <>
+                <span className="material-symbols-outlined text-sm">person_add</span>
+                Finalizar Registro
+              </>
+            )}
+          </button>
+        </form>
+      </div>
+    </div>
+  )
+}

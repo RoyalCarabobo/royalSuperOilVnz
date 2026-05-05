@@ -3,7 +3,7 @@ import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import { ArrowLeft, CheckCircle, Eye } from 'lucide-react';
-import OrderDetailModal from '@/components/OrderDetailModal';
+import OrderDetailModal from '@/components/modal/OrderDetailModal';
 import { createClient } from '@/utils/supabase/client';
 import { OrderService } from '@/services/orders';
 
