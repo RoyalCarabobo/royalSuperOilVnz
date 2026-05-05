@@ -3,30 +3,27 @@ import { createClient } from '@/utils/supabase/client';
 const supabase = createClient();
 
 export const ClientService = {
+    /**
+     * LECTURA DE DATOS
+     */
 
-
-    // Versión Admin: Ve todos los clientes del sistema
     async getAllForAdmin() {
         const { data, error } = await supabase
             .from('clientes')
-            .select(` *, vendedor:vendedor_id (nombre_completo)`)
+            .select(`*, vendedor:vendedor_id (nombre_completo)`)
             .order('fecha_registro', { ascending: false });
 
-        if (error) {
-            console.error('errpr en supabase', error);
-            throw error;
-        }
+        if (error) throw error;
         return data;
     },
 
-    // Versión Vendedor: Solo ve sus clientes asignados
     async getMyClients() {
         const { data: { user } } = await supabase.auth.getUser();
         if (!user) throw new Error("No hay sesión activa");
 
         const { data, error } = await supabase
             .from('clientes')
-            .select('id, razon_social, rif, status, encargado, foto_fachada_url, foto_rif_url ')
+            .select('*')
             .eq('vendedor_id', user.id)
             .order('razon_social', { ascending: true });
 
@@ -34,71 +31,75 @@ export const ClientService = {
         return data;
     },
 
-    async getById(id) {
-        const { data, error } = await supabase
-            .from('clientes')
-            .select(`
-            *,
-            vendedor:vendedor_id (id, nombre_completo)
-        `)
-            .eq('id', id)
-            .single();
+    /**
+     * ESCRITURA Y ARCHIVOS
+     */
 
-        if (error) throw error;
-        return data;
+    // Función interna para subir archivos
+    async _uploadDocument(file, folder, userId) {
+        if (!file) return null;
+        const fileExt = file.name.split('.').pop();
+        const fileName = `${userId}_${Date.now()}.${fileExt}`;
+        const path = `${folder}/${fileName}`;
+
+        const { error: upErr } = await supabase.storage
+            .from('client-documents')
+            .upload(path, file, {
+                cacheControl: '3600',
+                upsert: true
+            });
+
+        if (upErr) {
+            console.error(`Error subiendo ${folder}:`, upErr);
+            throw upErr;
+        }
+
+        const { data: { publicUrl } } = supabase.storage
+            .from('client-documents')
+            .getPublicUrl(path);
+
+        return publicUrl;
     },
 
     /**
-     * ACCIONES (WRITE/UPDATE)
+     * Autoregistro mediante RPC (Para saltar RLS)
      */
-
-    async create(clientData, files) {
-        const { data: { user } } = await supabase.auth.getUser();
-
-        // 1. Lógica de archivos aislada y segura
-        const upload = async (file, folder) => {
-            const fileName = `${crypto.randomUUID()}.${file.name.split('.').pop()}`;
-            const path = `${folder}/${fileName}`;
-
-            // bucket en Supabase: 'fotos-clientes'            
-            const { error: upErr } = await supabase.storage
-                .from('client-documents')
-                .upload(path, file);
-
-            if (upErr) throw upErr;
-            return supabase.storage.from('client-documents').getPublicUrl(path).data.publicUrl;
-        };
-
+    async completeSelfRegistration(userId, metadataParaSupabase, files) {
         try {
+            if (!metadataParaSupabase) throw new Error("Datos del formulario no recibidos");
+            if (!files) throw new Error("No se recibieron los archivos");
+
+            // 1. Subir archivos y obtener URLs en paralelo
             const [rifUrl, fachadaUrl] = await Promise.all([
-                files.rif ? upload(files.rif, 'rif') : Promise.resolve(''),
-                files.fachada ? upload(files.fachada, 'fachadas') : Promise.resolve('')
+                this._uploadDocument(files.rif, 'rif', userId),
+                this._uploadDocument(files.fachada, 'fachadas', userId)
             ]);
 
-            // 2. Inserción limpia
-            const { data, error } = await supabase
-                .from('clientes')
-                .insert([{
-                    razon_social: clientData.razon_social,
-                    rif: clientData.rif,
-                    encargado: clientData.encargado,
-                    telefono: clientData.telefono,
-                    email: clientData.email,
-                    direccion: clientData.direccion,
-                    foto_rif_url: rifUrl,
-                    foto_fachada_url: fachadaUrl,
-                    status: 'pendiente',
-                    vendedor_id: user.id
-                }])
-                .select()
-                .single();
+            console.log("📸 URLs obtenidas:", { rifUrl, fachadaUrl, user: userId });
 
-            if (error) throw error;
-            return data;
+            // 2. Llamamos al RPC (Asegúrate de haber creado la función en el SQL de Supabase)
+            // Esto actualiza la tabla 'clientes' ignorando restricciones de RLS
+            const { data, error: rpcError } = await supabase.rpc('vincular_fotos_cliente', {
+                p_user_id: userId,
+                p_rif_url: rifUrl,
+                p_fachada_url: fachadaUrl
+            });
+
+            if (rpcError) throw rpcError;
+
+            // 3. Opcional: Si quieres actualizar otros campos de texto que el Trigger no haya captado
+            // pero el RPC ya debería haber marcado el status como 'pendiente'.
+            return { success: true, data };
+
         } catch (err) {
+            console.error("Error crítico en completeSelfRegistration:", err);
             throw err;
         }
     },
+
+    /**
+     * ACTUALIZACIONES (Admin/Vendedor)
+     */
 
     async updateStatus(id, newStatus, adminId) {
         const { data, error } = await supabase
@@ -110,18 +111,18 @@ export const ClientService = {
             })
             .eq('id', id)
             .select()
-            .maybeSingle()
-            
+            .maybeSingle();
 
         if (error) throw error;
         return data;
     },
 
-    async update(id, updateData) {
+    async reassignVendedor(clientId, newVendedorId) {
         const { error } = await supabase
             .from('clientes')
-            .update(updateData)
-            .eq('id', id);
+            .update({ vendedor_id: newVendedorId })
+            .eq('id', clientId);
+
         if (error) throw error;
     }
 };

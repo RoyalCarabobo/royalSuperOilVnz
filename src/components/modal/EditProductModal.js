@@ -21,7 +21,7 @@ export default function EditProductModal({ product, isOpen, onClose, onUpdate })
     useEffect(() => {
         if (product) {
             setFormData({
-                nombre: product.nombre, // Cambiado de 'name'
+                nombre: product.nombre,
                 descripcion: product.descripcion || '',
                 precio_contado: product.precio_contado,
                 precio_credito: product.precio_credito,
@@ -50,6 +50,7 @@ export default function EditProductModal({ product, isOpen, onClose, onUpdate })
         try {
             // El servicio ya se encarga de parsear y subir la imagen
             const result = await ProductService.update(product.id, formData, imageFile);
+            console.log("Producto actualizado:", result);
 
             if (result) {
                 onUpdate(); // Refresca la tabla de inventario
