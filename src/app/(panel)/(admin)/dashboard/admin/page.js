@@ -11,7 +11,7 @@ import {
   ChevronRight,
   Download
 } from 'lucide-react';
-import OrderDetailModal from '@/components/OrderDetailModal';
+import OrderDetailModal from '@/components/modal/OrderDetailModal';
 import SalesChart from '@/components/SalesChart';
 import ReportFilterModal from '@/components/modal/ReportFilterModal';
 

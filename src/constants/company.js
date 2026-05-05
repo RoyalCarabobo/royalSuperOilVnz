@@ -14,22 +14,4 @@ export const companyData = {
     currency: "USD / VES (Tasa BCV)",
     footer_note: "Esta Nota de Entrega no es una factura fiscal. Mercancía viaja por cuenta y riesgo del cliente."
   },
-
-  // Cuentas Bancarias para "Reportar Pago"
-  payment_methods: {
-    zelle: {
-      email: "pagos@royalsuperoil.com",
-      holder: "Royal Super Oil Corp"
-    },
-    pago_movil: {
-      bank: "Banesco",
-      phone: "0412-1234567",
-      rif: "J-12345678-9"
-    },
-    transferencia_bs: {
-      bank: "Banco Mercantil",
-      account_number: "0105-XXXX-XX-XXXXXXXXXX",
-      holder: "Royal Super Oil, C.A."
-    }
-  }
 };
